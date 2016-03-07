@@ -36,7 +36,20 @@ When /^I digest\-authenticate as the user "(.*?)" with the password "(.*?)"$/ do
   digest_authorize user, pass
 end
 
-When /^I send a (GET|PATCH|POST|PUT|DELETE) request (?:for|to) "([^"]*)"(?: with the following:)?$/ do |*args|
+def cucumber_api_steps_replace_variables input, &post_processing
+  input.gsub(/%{(\w+)}/) do
+    key = Regexp.last_match[1]
+    value = defined?(JsonSpec) ? JsonSpec.memory[key.to_sym].to_s : nil
+    unless value
+      value = self.instance_variable_get "@#{key}".to_sym
+    end
+
+    value = post_processing.call(value) if post_processing
+    value
+  end
+end
+
+When /^I send a (GET|POST|PATCH|PUT|DELETE) request (?:for|to) "([^"]*)"(?: with the following:)?$/ do |*args|
   request_type = args.shift
   path = args.shift
   input = args.shift
@@ -44,11 +57,16 @@ When /^I send a (GET|PATCH|POST|PUT|DELETE) request (?:for|to) "([^"]*)"(?: with
   request_opts = {method: request_type.downcase.to_sym}
 
   unless input.nil?
-    if input.class == Cucumber::MultilineArgument::DataTable
-      request_opts[:params] = input.rows_hash
+    if input.class == Cucumber::Ast::Table
+      request_opts[:params] = input.rows_hash.reduce({}){|acc, (k,v)| acc[k] = cucumber_api_steps_replace_variables(v); acc}
     else
-      request_opts[:input] = StringIO.new input
+      request_opts[:input] = cucumber_api_steps_replace_variables(input)
     end
+  end
+
+  path = cucumber_api_steps_replace_variables(path) do |value|
+    value = value[1..-2] if value[0] == '"' and value[-1] == '"'
+    value
   end
 
   request path, request_opts
@@ -76,24 +94,25 @@ Then /^the response status should be "([^"]*)"$/ do |status|
   end
 end
 
-Then /^the JSON response should (not)?\s?have "([^"]*)"$/ do |negative, json_path|
-  json    = JSON.parse(last_response.body)
-  results = JsonPath.new(json_path).on(json).to_a.map(&:to_s)
-  if self.respond_to?(:expect)
-    if negative.present?
-      expect(results).to be_empty
+unless defined? JsonSpec
+  Then /^the JSON response should (not)?\s?have "([^"]*)"$/ do |negative, json_path|
+    json = JSON.parse(last_response.body)
+    results = JsonPath.new(json_path).on(json).to_a.map(&:to_s)
+    if self.respond_to?(:expect)
+      if negative.present?
+        expect(results).to be_empty
+      else
+        expect(results).not_to be_empty
+      end
     else
-      expect(results).not_to be_empty
-    end
-  else
-    if negative.present?
-      assert results.empty?
-    else
-      assert !results.empty?
+      if negative.present?
+        assert results.empty?
+      else
+        assert !results.empty?
+      end
     end
   end
 end
-
 
 Then /^the JSON response should (not)?\s?have "([^"]*)" with the text "([^"]*)"$/ do |negative, json_path, text|
   json    = JSON.parse(last_response.body)
@@ -143,14 +162,16 @@ Then /^the XML response should have "([^"]*)" with the text "([^"]*)"$/ do |xpat
   end
 end
 
-Then /^the JSON response should be:$/ do |json|
-  expected = JSON.parse(json)
-  actual = JSON.parse(last_response.body)
+unless defined? JsonSpec
+  Then /^the JSON response should be:$/ do |json|
+    expected = JSON.parse(json)
+    actual = JSON.parse(last_response.body)
 
-  if self.respond_to?(:expect)
-    expect(actual).to eq(expected)
-  else
-    assert_equal actual, response
+    if self.respond_to?(:expect)
+      expect(actual).to eq expected
+    else
+      assert_equal actual, response
+    end
   end
 end
 
